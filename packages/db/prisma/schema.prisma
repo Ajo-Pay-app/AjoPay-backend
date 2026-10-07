@@ -1,0 +1,71 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  EXPIRED
+  CANCELLED
+}
+
+enum SettlementStatus {
+  QUEUED
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+model Merchant {
+  id             String    @id @default(cuid())
+  email          String    @unique
+  passwordHash   String
+  businessName   String
+  stellarAddress String
+  payoutCurrency String    @default("NGN")
+  createdAt      DateTime  @default(now())
+  payments       Payment[]
+}
+
+model Payment {
+  id          String        @id @default(cuid())
+  merchantId  String
+  merchant    Merchant      @relation(fields: [merchantId], references: [id])
+  reference   String        @unique
+  amountUsdc  Decimal       @db.Decimal(18, 7)
+  currency    String
+  fxRate      Decimal       @db.Decimal(18, 6)
+  amountFiat  Decimal       @db.Decimal(18, 2)
+  status      PaymentStatus @default(PENDING)
+  onChainId   Int?          @unique
+  txHash      String?
+  payerAddress String?
+  createdAt   DateTime      @default(now())
+  expiresAt   DateTime
+  paidAt      DateTime?
+  settlement  Settlement?
+
+  @@index([merchantId, createdAt])
+}
+
+model Settlement {
+  id         String           @id @default(cuid())
+  paymentId  String           @unique
+  payment    Payment          @relation(fields: [paymentId], references: [id])
+  amountFiat Decimal          @db.Decimal(18, 2)
+  currency   String
+  status     SettlementStatus @default(QUEUED)
+  anchorRef  String?
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+}
+
+model IndexerState {
+  id         String @id
+  lastLedger Int
+}
