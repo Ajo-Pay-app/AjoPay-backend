@@ -1,0 +1,16 @@
+{
+  "name": "ajopay-backend",
+  "private": true,
+  "packageManager": "pnpm@9.12.0",
+  "scripts": {
+    "dev": "pnpm -r --parallel --filter \"./services/*\" dev",
+    "db:generate": "pnpm --filter @ajopay/db generate",
+    "db:migrate": "pnpm --filter @ajopay/db migrate",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
