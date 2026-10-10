@@ -28,6 +28,7 @@ model Merchant {
   businessName   String
   stellarAddress String
   payoutCurrency String    @default("NGN")
+  webhookUrl     String?
   createdAt      DateTime  @default(now())
   payments       Payment[]
 }
@@ -68,4 +69,18 @@ model Settlement {
 model IndexerState {
   id         String @id
   lastLedger Int
+}
+
+model WebhookDelivery {
+  id         String   @id @default(cuid())
+  merchantId String
+  event      String
+  paymentId  String
+  url        String
+  statusCode Int?
+  success    Boolean
+  error      String?
+  createdAt  DateTime @default(now())
+
+  @@index([merchantId, createdAt])
 }
