@@ -37,7 +37,7 @@ AjoPay-Backend/
 ## Quick Start
 
 ```bash
-cp .env.example .env
+cp  .env
 pnpm install
 pnpm prisma migrate dev
 pnpm dev   # starts all four services concurrently
@@ -45,12 +45,60 @@ pnpm dev   # starts all four services concurrently
 
 ## Environment Variables
 
-See `.env.example`. Key ones:
+See `.env` Key ones:
 
 - `DATABASE_URL` — Postgres connection string
 - `STELLAR_RPC_URL` — Soroban RPC endpoint (testnet or mainnet)
 - `SETTLEMENT_CONTRACT_ID` / `GOVERNANCE_CONTRACT_ID` — from `AjoPay-Contract` deploy
 - `FX_RATE_PROVIDER_API_KEY` — your chosen FX/crypto price API key
+
+## Webhooks
+
+Merchants can set a `webhookUrl` on their account (currently a DB field — there's
+no settings-page UI for it yet, a good next feature to pair with the frontend's
+settings page). When set, `settlement-engine` POSTs an HMAC-signed JSON payload
+on three events:
+
+- `payment.paid`
+- `settlement.completed`
+- `settlement.failed`
+
+Each request carries an `x-ajopay-signature` header (`HMAC-SHA256` over the raw
+body, using `WEBHOOK_SIGNING_SECRET`). Deliveries are retried up to 3 times and
+logged to the `WebhookDelivery` table either way, so failures are debuggable
+rather than silent. See `services/settlement-engine/src/webhooks.ts`.
+
+## Tests
+
+`fx-engine` and `settlement-engine` have Vitest unit tests covering their core
+business logic (`quote.ts` and `transitions.ts` respectively), kept deliberately
+free of database/network calls so they run fast and don't need Postgres up:
+
+```bash
+pnpm test
+```
+
+`api-gateway` and `indexer` don't have dedicated tests yet — mostly thin
+routing/polling logic — but are reasonable next additions if you want full
+coverage.
+
+## Running with Docker
+
+Each service has its own `Dockerfile`, and `docker-compose.yml` wires them
+together with a Postgres container:
+
+```bash
+cp .env.example .env     # fill in SETTLEMENT_CONTRACT_ID etc. first
+docker compose up --build
+```
+
+This starts Postgres, `fx-engine`, `settlement-engine`, `indexer`, and
+`api-gateway` on their usual ports. Run Prisma migrations against the
+Dockerized Postgres once, from the host, before first use:
+
+```bash
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ajopay pnpm db:migrate
+```
 
 ## Status
 
