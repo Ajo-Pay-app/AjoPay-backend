@@ -1,0 +1,83 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ajopay
+    ports:
+      - "5432:5432"
+    volumes:
+      - ajopay_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  fx-engine:
+    build:
+      context: .
+      dockerfile: services/fx-engine/Dockerfile
+    env_file: .env
+    ports:
+      - "4002:4002"
+    restart: unless-stopped
+
+  settlement-engine:
+    build:
+      context: .
+      dockerfile: services/settlement-engine/Dockerfile
+    env_file: .env
+    environment:
+      FX_URL: http://fx-engine:4002
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/ajopay
+    ports:
+      - "4001:4001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      fx-engine:
+        condition: service_started
+    restart: unless-stopped
+
+  indexer:
+    build:
+      context: .
+      dockerfile: services/indexer/Dockerfile
+    env_file: .env
+    environment:
+      SETTLEMENT_URL: http://settlement-engine:4001
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/ajopay
+    ports:
+      - "4003:4003"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      settlement-engine:
+        condition: service_started
+    restart: unless-stopped
+
+  api-gateway:
+    build:
+      context: .
+      dockerfile: services/api-gateway/Dockerfile
+    env_file: .env
+    environment:
+      SETTLEMENT_URL: http://settlement-engine:4001
+      FX_URL: http://fx-engine:4002
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/ajopay
+    ports:
+      - "4000:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      settlement-engine:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  ajopay_pg_data:
