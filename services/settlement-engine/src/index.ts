@@ -2,6 +2,8 @@ import express, { type NextFunction, type Request, type Response } from "express
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import { prisma } from "@ajopay/db";
+import { notifyMerchant } from "./webhooks.js";
+import { decidePaidTransition, httpStatusFor, isExpired } from "./transitions.js";
 
 const app = express();
 app.use(express.json());
@@ -58,7 +60,7 @@ app.get("/payments/:id", async (req, res) => {
   if (!payment) return res.status(404).json({ error: "not found" });
 
   // Lazily expire stale pending payments.
-  if (payment.status === "PENDING" && payment.expiresAt < new Date()) {
+  if (isExpired(payment)) {
     const expired = await prisma.payment.update({ where: { id: payment.id }, data: { status: "EXPIRED" } });
     return res.json({ ...payment, status: expired.status });
   }
@@ -106,13 +108,19 @@ const paidBody = z.object({
 
 async function markPaid(where: { id?: string; onChainId?: number }, data: z.infer<typeof paidBody>) {
   const payment = await prisma.payment.findFirst({ where });
-  if (!payment) return { status: 404 as const, body: { error: "payment not found" } };
-  if (payment.status === "PAID") return { status: 200 as const, body: payment };
-  if (payment.status !== "PENDING") return { status: 409 as const, body: { error: `payment is ${payment.status}` } };
+  const decision = decidePaidTransition(payment);
+  const status = httpStatusFor(decision);
 
+  if (decision.kind === "not_found") return { status, body: { error: "payment not found" } };
+  if (decision.kind === "already_paid") return { status, body: payment! };
+  if (decision.kind === "invalid_state") {
+    return { status, body: { error: `payment is ${decision.currentStatus}` } };
+  }
+
+  // decision.kind === "apply"
   const updated = await prisma.$transaction(async (tx) => {
     const p = await tx.payment.update({
-      where: { id: payment.id },
+      where: { id: payment!.id },
       data: { status: "PAID", paidAt: new Date(), txHash: data.txHash, payerAddress: data.payerAddress },
     });
     await tx.settlement.create({
@@ -120,13 +128,28 @@ async function markPaid(where: { id?: string; onChainId?: number }, data: z.infe
     });
     return p;
   });
-  return { status: 200 as const, body: updated };
+  return { status, body: updated };
+}
+
+// Fires the payment.paid webhook without blocking the HTTP response on it —
+// a slow or down merchant endpoint shouldn't make payment confirmation slow.
+function notifyPaidIfNew(before: { status: string }, after: { id: string; merchantId: string; amountUsdc: unknown; currency: string; amountFiat: unknown }) {
+  if (before.status === "PENDING") {
+    void notifyMerchant({
+      merchantId: after.merchantId,
+      paymentId: after.id,
+      event: "payment.paid",
+      payload: { amountUsdc: after.amountUsdc, currency: after.currency, amountFiat: after.amountFiat },
+    });
+  }
 }
 
 app.post("/payments/:id/paid", async (req, res) => {
   const body = paidBody.safeParse(req.body ?? {});
   if (!body.success) return res.status(400).json({ error: body.error.flatten() });
+  const before = await prisma.payment.findUnique({ where: { id: req.params.id } });
   const out = await markPaid({ id: req.params.id }, body.data);
+  if (out.status === 200 && before) notifyPaidIfNew(before, out.body as typeof before & { id: string });
   res.status(out.status).json(out.body);
 });
 
@@ -134,7 +157,9 @@ app.post("/payments/:id/paid", async (req, res) => {
 app.post("/payments/by-onchain/:onChainId/paid", async (req, res) => {
   const body = paidBody.safeParse(req.body ?? {});
   if (!body.success) return res.status(400).json({ error: body.error.flatten() });
+  const before = await prisma.payment.findFirst({ where: { onChainId: Number(req.params.onChainId) } });
   const out = await markPaid({ onChainId: Number(req.params.onChainId) }, body.data);
+  if (out.status === 200 && before) notifyPaidIfNew(before, out.body as typeof before & { id: string });
   res.status(out.status).json(out.body);
 });
 
@@ -152,12 +177,30 @@ app.post("/payments/:id/cashout", async (req, res) => {
   if (settlement.status === "PROCESSING") return res.status(409).json({ error: "already processing" });
 
   await prisma.settlement.update({ where: { id: settlement.id }, data: { status: "PROCESSING" } });
+  const payment = await prisma.payment.findUnique({ where: { id: req.params.id } });
+
   try {
     const { anchorRef } = await callAnchor(settlement);
     const done = await prisma.settlement.update({ where: { id: settlement.id }, data: { status: "COMPLETED", anchorRef } });
+    if (payment) {
+      void notifyMerchant({
+        merchantId: payment.merchantId,
+        paymentId: payment.id,
+        event: "settlement.completed",
+        payload: { amountFiat: done.amountFiat, currency: done.currency, anchorRef },
+      });
+    }
     res.json(done);
   } catch (err) {
     await prisma.settlement.update({ where: { id: settlement.id }, data: { status: "FAILED" } });
+    if (payment) {
+      void notifyMerchant({
+        merchantId: payment.merchantId,
+        paymentId: payment.id,
+        event: "settlement.failed",
+        payload: { error: (err as Error).message },
+      });
+    }
     res.status(502).json({ error: "anchor call failed", detail: (err as Error).message });
   }
 });
