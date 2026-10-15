@@ -1,5 +1,6 @@
 import express from "express";
 import { z } from "zod";
+import { computeQuote } from "./quote.js";
 
 const app = express();
 const PORT = Number(process.env.FX_PORT ?? 4002);
@@ -47,18 +48,8 @@ app.get("/quote", async (req, res) => {
   const marketRate = rates[currency];
   if (!marketRate) return res.status(400).json({ error: `Unsupported currency ${currency}` });
 
-  // Merchant receives slightly less than mid-market: that's the platform spread.
-  const rate = marketRate * (1 - SPREAD_BPS / 10_000);
-  res.json({
-    currency,
-    marketRate,
-    rate: Number(rate.toFixed(6)),
-    amountUsdc,
-    amountFiat: Number((amountUsdc * rate).toFixed(2)),
-    spreadBps: SPREAD_BPS,
-    source,
-    expiresAt: new Date(Date.now() + 60_000).toISOString(),
-  });
+  const quote = computeQuote({ marketRate, amountUsdc, currency, spreadBps: SPREAD_BPS });
+  res.json({ ...quote, source, expiresAt: new Date(Date.now() + 60_000).toISOString() });
 });
 
 app.listen(PORT, () => console.log(`fx-engine listening on :${PORT}`));
